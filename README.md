@@ -1,2 +1,197 @@
-# linux-namespace-enterprise-network-lab
-Two-site enterprise network lab using Linux network namespaces, static routing and a stateful iptables firewall
+# Enterprise Network Lab with Linux Network Namespaces
+
+A two-site enterprise network (HQ and Branch) built entirely inside the Linux kernel using network namespaces, virtual ethernet pairs, static routing and a stateful `iptables` firewall. No VMs or extra hardware are needed.
+
+**Author:** `Jainam Shah` | **Tested on:** Kali Linux (nf_tables backend, iptables v1.8.13)
+
+---
+
+## Objective
+
+Simulate a small corporate network and enforce a security policy between two sites:
+
+- HQ can reach Branch.
+- Branch cannot initiate connections to HQ (blocked and logged).
+- Replies to HQ-initiated connections are still allowed (stateful filtering).
+
+## Topology
+
+```
+[client-hq]──────[router-hq]════ WAN 10.0.0.0/30 ════[router-branch]──────[client-branch]
+192.168.1.10     .1 | 10.0.0.1                  10.0.0.2 | .1          192.168.2.10
+                 192.168.1.0/24                           192.168.2.0/24
+                   (HQ LAN)                                (Branch LAN)
+```
+
+| Namespace | Role | Interface | IP address |
+|---|---|---|---|
+| client-hq | HQ workstation | veth-c-hq | 192.168.1.10/24 |
+| router-hq | HQ router + firewall | veth-r-hq | 192.168.1.1/24 |
+| router-hq | HQ router (WAN side) | veth-hq-wan | 10.0.0.1/30 |
+| router-branch | Branch router (WAN side) | veth-branch-wan | 10.0.0.2/30 |
+| router-branch | Branch router | veth-r-branch | 192.168.2.1/24 |
+| client-branch | Branch workstation | veth-c-branch | 192.168.2.10/24 |
+
+## Technologies and concepts
+
+- **Network namespaces** (`ip netns`): each namespace is an isolated virtual machine-like network stack
+- **veth pairs**: virtual cables connecting namespaces
+- **IP forwarding + static routes**: turns a namespace into a router
+- **iptables** with `conntrack`: stateful firewall, rule ordering, LOG and DROP targets
+- **Verification tools**: `ping`, `traceroute`, `tcpdump`, iptables packet counters
+
+## Repository structure
+
+```
+.
+├── README.md
+├── setup.sh        # builds the network
+├── firewall.sh     # applies the iptables policy on router-hq
+├── verify.sh       # runs automated PASS/FAIL checks
+├── cleanup.sh      # removes the lab
+└── Screenshots/    # evidence images
+```
+
+## Prerequisites
+
+```bash
+sudo apt update
+sudo apt install -y iproute2 iptables tcpdump traceroute
+```
+
+Requires root (`sudo`) and a Linux kernel with namespace support (any modern Ubuntu, Debian or Kali).
+
+## Quick start
+
+```bash
+git clone https://github.com/ALEX83-rgb/linux-namespace-enterprise-network-lab.git
+cd linux-namespace-enterprise-network-lab
+
+sudo bash setup.sh      # 1. build the network (no firewall yet)
+sudo bash firewall.sh   # 2. apply the security policy
+sudo bash verify.sh     # 3. run all checks
+sudo bash cleanup.sh    # 4. tear everything down
+```
+
+## How it works
+
+### 1. Build the topology (`setup.sh`)
+
+1. Create four namespaces: `router-hq`, `client-hq`, `router-branch`, `client-branch`.
+2. Create three veth pairs and move each end into a different namespace.
+3. Assign IPs and bring every interface up.
+4. Enable `net.ipv4.ip_forward=1` in both routers.
+5. Add default gateways on the clients and static routes between the routers.
+
+### 2. Apply the firewall (`firewall.sh`)
+
+Rules on `router-hq`, FORWARD chain, evaluated top to bottom:
+
+| # | Rule | Purpose |
+|---|---|---|
+| 1 | `ESTABLISHED,RELATED` -> ACCEPT | Allow replies to connections already allowed (stateful) |
+| 2 | `192.168.1.0/24 -> 192.168.2.0/24` ACCEPT | HQ may reach Branch |
+| 3 | `192.168.2.0/24 -> 192.168.1.0/24` LOG | Log Branch-to-HQ attempts |
+| 4 | `192.168.2.0/24 -> 192.168.1.0/24` DROP | Block Branch-to-HQ attempts |
+
+Order matters: iptables stops at the first matching rule, so the allow rules must come before the drop.
+
+### 3. Verify (`verify.sh`)
+
+Runs namespace, forwarding, routing, connectivity and firewall checks and prints a PASS/FAIL summary.
+
+## Manual commands (cheat sheet)
+
+```bash
+ip netns list                                                            # list namespaces
+sudo ip netns exec router-hq ip -br addr                                 # interfaces and IPs
+sudo ip netns exec router-hq ip route                                    # routing table
+sudo ip netns exec client-hq ping -c 3 192.168.2.10                      # HQ -> Branch (works)
+sudo ip netns exec client-branch ping -c 3 192.168.1.10                  # Branch -> HQ (blocked)
+sudo ip netns exec client-hq traceroute -n 192.168.2.10                  # shows 2 router hops
+sudo ip netns exec router-hq iptables -L FORWARD -n -v --line-numbers    # rules + counters
+sudo ip netns exec router-hq tcpdump -i veth-hq-wan -n icmp              # live capture
+sudo dmesg | grep BRANCH-TO-HQ                                           # firewall log
+```
+
+Live capture demo (two terminals):
+
+```bash
+# Terminal 1
+sudo ip netns exec router-hq tcpdump -i veth-hq-wan -n icmp
+# Terminal 2
+sudo ip netns exec client-branch ping -c 3 192.168.1.10
+```
+
+## Results
+
+| Test | Expected | Result |
+|---|---|---|
+| HQ -> Branch, before firewall | Works | 0% packet loss, TTL 62 |
+| Branch -> HQ, before firewall | Works | 0% packet loss, TTL 62 |
+| Traceroute HQ -> Branch | 2 router hops | 192.168.1.1, 10.0.0.2, 192.168.2.10 |
+| HQ -> Branch, after firewall | Works | 0% packet loss |
+| Branch -> HQ, after firewall | Blocked | 100% packet loss |
+| DROP rule counter | Greater than 0 | Increments on every blocked packet |
+
+**Why TTL is 62:** Linux starts at 64 and each router hop subtracts 1. Two routers give 64 - 2 = 62, which confirms traffic crossed both routers.
+
+## Screenshots
+
+### 1. Namespaces
+![Namespaces](Screenshots/Namespace.png)
+
+### 2. IP addressing
+![IP addresses](Screenshots/ip-addresses.png)
+
+### 3. Routing and forwarding
+![Routing](Screenshots/routing.png)
+
+### 4. Connectivity before the firewall
+![Before firewall](Screenshots/before%20firewall.png)
+
+### 5. Connectivity after the firewall
+![After firewall](Screenshots/after%20firewall.png)
+
+### 6. iptables rules and DROP counter
+![iptables rules](Screenshots/firewall%20rules.png)
+
+### 7. Packet capture (tcpdump)
+![tcpdump](Screenshots/tcpdump.png)
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `Network is unreachable` | Missing default route or an interface still down |
+| Ping reaches the router but not beyond | Check `ip_forward=1` and the static routes on both routers |
+| Ping goes out but no reply | The return route is missing on the other router |
+| `File exists` error | The lab already exists. Run `cleanup.sh` and try again |
+| `iptables: No chain/target/match by that name` | Chain names are case-sensitive. Use `FORWARD`, not `forward` |
+| `dmesg` shows no firewall log | Namespace logging is often unavailable on nf_tables. Use the packet counters and tcpdump as proof |
+| Settings vanish after reboot | Namespaces are not persistent. Re-run `setup.sh` and `firewall.sh` |
+
+## Known limitation
+
+Kernel `LOG` output from inside a network namespace may not reach the host's `dmesg` on nf_tables systems, even with `net.netfilter.nf_log_all_netns=1`. Blocking was therefore verified using iptables packet counters and tcpdump captures.
+
+## Skills demonstrated
+
+Linux networking, IP addressing and subnetting (/24 and /30), static routing, stateful firewalling, packet analysis, Bash scripting, troubleshooting and technical documentation.
+
+## Possible extensions
+
+- Add a **DMZ** namespace with a web server (`python3 -m http.server 80`) and allow only port 80 from both LANs
+- Add **NAT** (masquerade) on `router-hq` to simulate internet access
+- Replace static routes with dynamic routing (FRRouting, OSPF)
+- Ship firewall logs to a SIEM and write detection rules for blocked traffic
+
+## Cleanup
+
+```bash
+sudo bash cleanup.sh
+```
+
+## License
+
+MIT. Free to use for learning.
