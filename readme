@@ -49,7 +49,7 @@ Simulate a small corporate network and enforce a security policy between two sit
 ├── firewall.sh     # applies the iptables policy on router-hq
 ├── verify.sh       # runs automated PASS/FAIL checks
 ├── cleanup.sh      # removes the lab
-└── Screenshots/    # evidence images
+└── *.png           # evidence screenshots
 ```
 
 ## Prerequisites
@@ -139,25 +139,25 @@ sudo ip netns exec client-branch ping -c 3 192.168.1.10
 ## Screenshots
 
 ### 1. Namespaces
-![Namespaces](Screenshots/Namespace.png)
+![Namespaces](Namespace.png)
 
 ### 2. IP addressing
-![IP addresses](Screenshots/ip-addresses.png)
+![IP addresses](ip-addresses.png)
 
 ### 3. Routing and forwarding
-![Routing](Screenshots/routing.png)
+![Routing](routing.png)
 
 ### 4. Connectivity before the firewall
-![Before firewall](Screenshots/before%20firewall.png)
+![Before firewall](before%20firewall.png)
 
 ### 5. Connectivity after the firewall
-![After firewall](Screenshots/after%20firewall.png)
+![After firewall](after%20firewall.png)
 
 ### 6. iptables rules and DROP counter
-![iptables rules](Screenshots/firewall%20rules.png)
+![iptables rules](firewall%20rules.png)
 
 ### 7. Packet capture (tcpdump)
-![tcpdump](Screenshots/tcpdump.png)
+![tcpdump](tcpdump.png)
 
 ## Troubleshooting
 
